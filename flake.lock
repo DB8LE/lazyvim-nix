@@ -1,5 +1,21 @@
 {
   "nodes": {
+    "flake-compat": {
+      "locked": {
+        "lastModified": 1761588617,
+        "narHash": "sha256-bHDJDoMHMMctf90Ug0po2LNanPgdB8aRl0psH7+TWzc=",
+        "owner": "NixOS",
+        "repo": "flake-compat",
+        "rev": "01ad7ce89c455171e4f864799b21d0785ba94a3a",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "pull/75/merge",
+        "repo": "flake-compat",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -36,6 +52,7 @@
     },
     "root": {
       "inputs": {
+        "flake-compat": "flake-compat",
         "flake-utils": "flake-utils",
         "nixpkgs": "nixpkgs"
       }
