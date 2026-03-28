@@ -38,17 +38,19 @@
           return result
         end
 
-        -- Write result
-        local file = io.open("$out", "w")
+        -- Write result to Nix output path
+        local output_path = os.getenv("out")
+        local file = io.open(output_path, "w")
         file:write(to_json_array(user_plugins))
         file:close()
         EOF
 
-        # Run the scanner if config path exists
+        # Default to empty array (handles early returns in Lua scanner)
+        echo "[]" > $out
+
+        # Run the scanner if config path exists (overwrites default on success)
         if [ -d "${config_path}" ]; then
-          lua run-scanner.lua 2>/dev/null || echo "[]" > $out
-        else
-          echo "[]" > $out
+          lua run-scanner.lua 2>/dev/null || true
         fi
       '';
       userPluginsJson = builtins.readFile scanResult;
@@ -57,7 +59,7 @@
       userPluginsList;
 
   # Helper function to scan config files from a directory
-  scanConfigFiles = configPath:
+  scanConfigFiles = configPath: appName:
     if configPath == null then
       { configFiles = {}; pluginFiles = {}; }
     else if !builtins.pathExists configPath then
@@ -88,16 +90,16 @@
             targetPath =
               if lib.hasPrefix "lua/" relPath then
                 # Already has lua/ prefix, use as-is
-                "nvim/${relPath}"
+                "${appName}/${relPath}"
               else if lib.hasPrefix "config/" relPath then
                 # config/ at root, add lua/ prefix
-                "nvim/lua/${relPath}"
+                "${appName}/lua/${relPath}"
               else if lib.hasPrefix "plugins/" relPath then
                 # plugins/ at root, add lua/ prefix
-                "nvim/lua/${relPath}"
+                "${appName}/lua/${relPath}"
               else
                 # Other structure - put under lua/
-                "nvim/lua/${relPath}";
+                "${appName}/lua/${relPath}";
 
             # Determine file category for conflict detection
             category =

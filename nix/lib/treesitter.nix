@@ -1,7 +1,76 @@
 # Treesitter management utilities for LazyVim Nix module
 { lib, pkgs, treesitterMappings, extractLang, ignoreBuildNotifications ? false }:
 
-{
+let
+  # Load parser revisions for "latest" strategy (may not exist)
+  parserRevisionsPath = ../../data/parser-revisions.json;
+  parserRevisionsExists = builtins.pathExists parserRevisionsPath;
+  parserRevisions = if parserRevisionsExists
+    then builtins.fromJSON (builtins.readFile parserRevisionsPath)
+    else { parsers = {}; };
+
+  # Build a single parser from source using tree-sitter.buildGrammar
+  buildParserFromSource = parserName:
+    let
+      spec = parserRevisions.parsers.${parserName} or null;
+    in
+      if spec == null then
+        # Fall back to nixpkgs grammarPlugins if no spec
+        pkgs.vimPlugins.nvim-treesitter.grammarPlugins.${parserName} or (
+          if ignoreBuildNotifications then null
+          else builtins.trace "Warning: treesitter parser '${parserName}' not found in parser-revisions.json or nixpkgs" null
+        )
+      else
+        let
+          # Build the grammar from source
+          revShort = builtins.substring 0 7 spec.revision;
+          grammar = pkgs.tree-sitter.buildGrammar ({
+            language = parserName;
+            version = "0.0.0+rev-${revShort}";
+            src = pkgs.fetchgit {
+              url = spec.url;
+              rev = spec.revision;
+              sha256 = spec.sha256;
+              fetchSubmodules = false;
+            };
+            # Add tree-sitter + nodejs for grammars that need parser generation
+            generate = true;
+            # Override configurePhase for cross-nixpkgs compatibility:
+            # - nixpkgs 24.11: its configurePhase runs tree-sitter generate
+            #   unconditionally, which fails for monorepo grammars whose grammar.js
+            #   depends on sibling packages not available in the sandbox (e.g. tsx
+            #   depends on tree-sitter-javascript)
+            # - nixpkgs unstable: its configurePhase has tree-sitter.json version
+            #   checks that fail for pinned-commit builds
+            # Subdirectory navigation (cd) replaces the location attribute to avoid
+            # conflicts with nixpkgs' setSourceRoot mechanism.
+            configurePhase = ''
+              runHook preConfigure
+              ${lib.optionalString (spec.location or null != null) "cd ${spec.location}"}
+              runHook postConfigure
+            '';
+            # Only generate when src/parser.c is not checked into the repo
+            preBuild = ''
+              if [[ ! -e src/parser.c ]]; then
+                tree-sitter generate
+              fi
+            '';
+          });
+
+          # Wrap the grammar as a vim plugin with the parser in the right location
+          vimPlugin = pkgs.runCommand "treesitter-grammar-${parserName}" {
+            passthru = {
+              inherit grammar;
+              grammarName = parserName;
+            };
+          } ''
+            mkdir -p $out/parser
+            ln -s ${grammar}/parser $out/parser/${parserName}.so
+          '';
+        in
+          vimPlugin;
+
+in {
   # Derive automatic treesitter parsers
   automaticTreesitterParsers = cfg: enabledExtraNames:
     if cfg.enable then
@@ -21,7 +90,7 @@
     else
       map extractLang cfg.treesitterParsers;
 
-  # Treesitter configuration - use nvim-treesitter's grammar plugins directly
+  # Treesitter configuration - use nvim-treesitter's grammar plugins directly (for "nixpkgs" strategy)
   treesitterGrammars = automaticTreesitterParsers:
     let
       # automaticTreesitterParsers now contains parser names, not packages
@@ -40,4 +109,22 @@
         paths = parserPackages;
       };
     in parsers;
+
+  # Build treesitter grammars from source using parser-revisions.json (for "latest" strategy)
+  # This ensures parsers match the nvim-treesitter version specified in plugins.json
+  treesitterGrammarsFromSource = automaticTreesitterParsers:
+    let
+      parserNames = automaticTreesitterParsers;
+
+      # Build parsers from source using parser-revisions.json
+      parserPackages = lib.filter (pkg: pkg != null) (map buildParserFromSource parserNames);
+
+      parsers = pkgs.symlinkJoin {
+        name = "treesitter-parsers-from-source";
+        paths = parserPackages;
+      };
+    in parsers;
+
+  # Check if parser revisions are available
+  hasParserRevisions = parserRevisionsExists && (parserRevisions.parsers or {}) != {};
 }

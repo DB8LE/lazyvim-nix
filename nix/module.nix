@@ -42,7 +42,9 @@ let
         in
           lib.mapAttrsToList (extraName: extraConfig:
             let
-              metadata = dataLib.extrasMetadata.${categoryName}.${extraName} or null;
+              # Normalize hyphens to underscores to match extras.json keys
+              normalizedName = builtins.replaceStrings ["-"] ["_"] extraName;
+              metadata = dataLib.extrasMetadata.${categoryName}.${normalizedName} or null;
             in
               if metadata != null then {
                 inherit (metadata) name category import;
@@ -72,7 +74,7 @@ let
 
   # Scan for user plugins from the default LazyVim config directory
   userPlugins = if cfg.enable then
-    fileLib.scanUserPlugins "${config.home.homeDirectory}/.config/nvim"
+    fileLib.scanUserPlugins "${config.home.homeDirectory}/.config/${cfg.appName}"
   else [];
 
   # Filter plugins by category: only build core plugins by default
@@ -99,6 +101,17 @@ let
   # Resolve all plugins using the smart resolver
   resolvedPlugins = map (pluginLib.resolvePlugin cfg) allPluginSpecs;
 
+  # Extract the resolved nvim-treesitter plugin for query file linking
+  # Must come from the same resolved list to match the parser strategy
+  resolvedTreesitterPlugin =
+    let
+      tsPlugins = lib.zipListsWith (spec: plugin:
+        if spec.name == "nvim-treesitter/nvim-treesitter" then plugin else null
+      ) allPluginSpecs resolvedPlugins;
+      found = lib.findFirst (p: p != null) null tsPlugins;
+    in
+      if found != null then found else pkgs.vimPlugins.nvim-treesitter;
+
   # Create the dev path with proper symlinks
   devPath = devPathLib.createDevPath allPluginSpecs resolvedPlugins;
 
@@ -109,16 +122,64 @@ let
   extrasImportSpecs = configLib.extrasImportSpecs enabledExtras;
 
   # Treesitter configuration
-  treesitterGrammars = treesitterLib.treesitterGrammars automaticTreesitterParsers;
+  # Select grammar source based on pluginSource strategy:
+  # - "latest": Build parsers from source to match nvim-treesitter version
+  # - "nixpkgs": Use nixpkgs grammarPlugins (current behavior)
+  treesitterGrammars =
+    if cfg.pluginSource == "latest" && treesitterLib.hasParserRevisions then
+      treesitterLib.treesitterGrammarsFromSource automaticTreesitterParsers
+    else
+      treesitterLib.treesitterGrammars automaticTreesitterParsers;
 
-  # Generate lazy.nvim configuration
-  lazyConfig = configLib.lazyConfig devPath extrasImportSpecs availableDevSpecs;
+  # Filter queries to only include languages with installed parsers (plus
+  # virtual base directories needed for `; inherits:` resolution). Without
+  # filtering, nvim-treesitter's health check considers every language with a
+  # query directory as "installed" and tries to validate its queries against a
+  # parser that may not exist, producing thousands of false errors.
+  filteredQueries = pkgs.runCommand "treesitter-queries" {} ''
+    mkdir -p $out
+    querySrc="${resolvedTreesitterPlugin}/runtime/queries"
+    parserDir="${treesitterGrammars}/parser"
+
+    # Link query directories for each installed parser
+    for parser_so in "$parserDir"/*.so; do
+      lang="$(basename "$parser_so" .so)"
+      if [ -d "$querySrc/$lang" ]; then
+        ln -s "$querySrc/$lang" "$out/$lang"
+      fi
+    done
+
+    # Transitively add query directories referenced by ; inherits: directives
+    changed=1
+    while [ "$changed" -eq 1 ]; do
+      changed=0
+      for linked_dir in "$out"/*/; do
+        [ -d "$linked_dir" ] || continue
+        for scm in "$linked_dir"/*.scm; do
+          [ -f "$scm" ] || continue
+          while IFS= read -r inherit; do
+            if [ -n "$inherit" ] && [ -d "$querySrc/$inherit" ] && [ ! -e "$out/$inherit" ]; then
+              ln -s "$querySrc/$inherit" "$out/$inherit"
+              changed=1
+            fi
+          done < <(grep '^; inherits:' "$scm" | sed 's/^; inherits: *//' | tr ',' '\n' | tr -d ' ')
+        done
+      done
+    done
+  '';
+
+  # Generate lazy.nvim configuration by patching the official LazyVim starter
+  lazyConfig = configLib.lazyConfig {
+    starterLua = dataLib.starterLua;
+    starterVersion = dataLib.starterVersion;
+    inherit devPath extrasImportSpecs availableDevSpecs;
+  };
 
   # Generate extras config override files
-  extrasConfigFiles = configLib.extrasConfigFiles enabledExtras;
+  extrasConfigFiles = configLib.extrasConfigFiles enabledExtras cfg.appName;
 
   # Scan config files if provided
-  scannedFiles = fileLib.scanConfigFiles cfg.configFiles;
+  scannedFiles = fileLib.scanConfigFiles cfg.configFiles cfg.appName;
 
   # Detect conflicts and ensure no conflicts exist
   conflictChecks = fileLib.detectConflicts cfg scannedFiles;
@@ -148,17 +209,23 @@ in {
       plugins = [ pkgs.vimPlugins.lazy-nvim ];
     };
 
-    # Create LazyVim configuration
-    xdg.configFile = {
-      "nvim/init.lua".text = lazyConfig;
-
-      # Link treesitter parsers only if parsers are configured
-      "nvim/parser" = mkIf (automaticTreesitterParsers != []) {
+    # Link treesitter parsers to the correct data directory
+    # nvim-treesitter expects parsers at stdpath('data')/site/parser
+    xdg.dataFile = {
+      "${cfg.appName}/site/parser" = mkIf (automaticTreesitterParsers != []) {
         source = "${treesitterGrammars}/parser";
       };
+      "${cfg.appName}/site/queries" = mkIf (automaticTreesitterParsers != []) {
+        source = "${filteredQueries}";
+      };
+    };
+
+    # Create LazyVim configuration
+    xdg.configFile = {
+      "${cfg.appName}/init.lua".text = lazyConfig;
 
       # LazyVim config files - use configFiles if available, otherwise use string options
-      "nvim/lua/config/autocmds.lua" = mkIf (
+      "${cfg.appName}/lua/config/autocmds.lua" = mkIf (
         scannedFiles.configFiles ? autocmds || cfg.config.autocmds != ""
       ) (
         if scannedFiles.configFiles ? autocmds then
@@ -172,7 +239,7 @@ in {
           }
       );
 
-      "nvim/lua/config/keymaps.lua" = mkIf (
+      "${cfg.appName}/lua/config/keymaps.lua" = mkIf (
         scannedFiles.configFiles ? keymaps || cfg.config.keymaps != ""
       ) (
         if scannedFiles.configFiles ? keymaps then
@@ -186,7 +253,7 @@ in {
           }
       );
 
-      "nvim/lua/config/options.lua" = mkIf (
+      "${cfg.appName}/lua/config/options.lua" = mkIf (
         scannedFiles.configFiles ? options || cfg.config.options != ""
       ) (
         if scannedFiles.configFiles ? options then
@@ -203,7 +270,7 @@ in {
     }
     # Generate plugin configuration files from both sources
     // (lib.mapAttrs' (name: content:
-      lib.nameValuePair "nvim/lua/plugins/${name}.lua" {
+      lib.nameValuePair "${cfg.appName}/lua/plugins/${name}.lua" {
         text = ''
           -- Plugin configuration for ${name} (configured via Nix)
           ${content}
@@ -224,7 +291,7 @@ in {
         hasUserPlugins = cfg.plugins != {} || scannedFiles.pluginFiles != {};
       in
         optionalAttrs (!hasUserPlugins) {
-          "nvim/lua/plugins/_lazyvim_nix_default.lua" = {
+          "${cfg.appName}/lua/plugins/_lazyvim_nix_default.lua" = {
             text = ''
               -- Default plugin specification to ensure plugins directory is valid
               -- This prevents "No specs found for module 'plugins'" error
@@ -232,6 +299,28 @@ in {
             '';
           };
         }
-    );
+    )
+    # Disable LazyVim's treesitter healthcheck - Nix provides pre-built parsers
+    // {
+      "${cfg.appName}/lua/plugins/_lazyvim_nix_healthcheck.lua" = {
+        text = ''
+          -- [NIX] Disable treesitter healthcheck - parsers are pre-built by Nix
+          -- LazyVim's healthcheck expects tree-sitter CLI and C compiler which aren't needed
+          vim.api.nvim_create_autocmd("User", {
+            pattern = "VeryLazy",
+            once = true,
+            callback = function()
+              local ok, ts = pcall(require, "lazyvim.util.treesitter")
+              if ok and ts then
+                ts.check = function()
+                  return true, { ["nix"] = true }
+                end
+              end
+            end,
+          })
+          return {}
+        '';
+      };
+    };
   };
 }

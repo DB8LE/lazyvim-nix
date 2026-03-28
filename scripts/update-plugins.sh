@@ -14,10 +14,12 @@ LAZYVIM_REPO="https://github.com/LazyVim/LazyVim.git"
 
 CACHE_DIR="$REPO_ROOT/tmp/update-cache"
 LAZYVIM_CACHE="$CACHE_DIR/LazyVim"
+STARTER_CACHE="$CACHE_DIR/starter"
 MASON_CACHE="$CACHE_DIR/mason-registry"
 EXTRAS_CACHE_ROOT="$CACHE_DIR/extras"
 RELEASE_CACHE_ROOT="$CACHE_DIR/releases"
 CACHE_SCHEMA_VERSION="2"
+STARTER_REPO="https://github.com/LazyVim/starter.git"
 
 mkdir -p "$CACHE_DIR"
 mkdir -p "$RELEASE_CACHE_ROOT"
@@ -97,10 +99,40 @@ LAZYVIM_VERSION="$LATEST_TAG"
 echo "    Version: $LAZYVIM_VERSION"
 echo "    Commit: $LAZYVIM_COMMIT"
 
+# Fetch LazyVim starter configuration
+echo "==> Fetching LazyVim starter..."
+if [ ! -d "$STARTER_CACHE/.git" ]; then
+    git clone --filter=blob:none "$STARTER_REPO" "$STARTER_CACHE" >/dev/null 2>&1 || {
+        echo "Error: Failed to clone LazyVim starter"
+        exit 1
+    }
+fi
+
+git -C "$STARTER_CACHE" fetch --force --prune --depth 1 origin main >/dev/null 2>&1 || {
+    echo "Error: Failed to update LazyVim starter cache"
+    exit 1
+}
+
+git -C "$STARTER_CACHE" reset --hard FETCH_HEAD >/dev/null 2>&1
+
+STARTER_COMMIT=$(git -C "$STARTER_CACHE" rev-parse HEAD)
+echo "    Starter commit: $STARTER_COMMIT"
+
+# Copy starter lazy.lua to data directory
+if [ -f "$STARTER_CACHE/lua/config/lazy.lua" ]; then
+    cp "$STARTER_CACHE/lua/config/lazy.lua" "$REPO_ROOT/data/starter-lazy.lua"
+    echo "$STARTER_COMMIT" > "$REPO_ROOT/data/starter-version.txt"
+    echo "    Copied starter lazy.lua"
+else
+    echo "Error: Could not find lua/config/lazy.lua in starter repository"
+    exit 1
+fi
+
 if [ -z "${LAZYVIM_FORCE_REGEN:-}" ] \
     && [ -f "$RELEASE_CACHE_DIR/plugins.json" ] \
     && [ -f "$RELEASE_CACHE_DIR/dependencies.json" ] \
-    && [ -f "$RELEASE_CACHE_DIR/treesitter.json" ]; then
+    && [ -f "$RELEASE_CACHE_DIR/treesitter.json" ] \
+    && [ -f "$RELEASE_CACHE_DIR/parser-revisions.json" ]; then
     if [ -n "$VERIFY_PACKAGES" ] && [ ! -f "$RELEASE_CACHE_DIR/dependencies-verification-report.json" ]; then
         echo "==> Release cache missing verification report; regenerating"
     else
@@ -108,6 +140,7 @@ if [ -z "${LAZYVIM_FORCE_REGEN:-}" ] \
         cp "$RELEASE_CACHE_DIR/plugins.json" "$REPO_ROOT/data/plugins.json"
         cp "$RELEASE_CACHE_DIR/dependencies.json" "$REPO_ROOT/data/dependencies.json"
         cp "$RELEASE_CACHE_DIR/treesitter.json" "$REPO_ROOT/data/treesitter.json"
+        cp "$RELEASE_CACHE_DIR/parser-revisions.json" "$REPO_ROOT/data/parser-revisions.json"
         if [ -n "$VERIFY_PACKAGES" ]; then
             cp "$RELEASE_CACHE_DIR/dependencies-verification-report.json" "$REPO_ROOT/data/dependencies-verification-report.json"
         else
@@ -173,6 +206,79 @@ if [ "$USED_RELEASE_CACHE" -eq 0 ]; then
         echo "Error: Generated treesitter.json is not valid JSON"
         exit 1
     fi
+
+    # Extract parser revisions from nvim-treesitter for "latest" strategy
+    echo "==> Extracting parser revisions for 'latest' strategy..."
+
+    # Get nvim-treesitter commit from plugins.json
+    NVIM_TS_COMMIT=$(jq -r '.plugins[] | select(.name == "nvim-treesitter/nvim-treesitter") | .version_info.commit // empty' "$REPO_ROOT/data/plugins.json")
+
+    if [ -n "$NVIM_TS_COMMIT" ]; then
+        echo "    nvim-treesitter commit: $NVIM_TS_COMMIT"
+
+        # Check if we can reuse cached parser revisions
+        EXISTING_TS_COMMIT=""
+        if [ -f "$REPO_ROOT/data/parser-revisions.json" ]; then
+            EXISTING_TS_COMMIT=$(jq -r '.nvim_treesitter_commit // empty' "$REPO_ROOT/data/parser-revisions.json" 2>/dev/null || true)
+        fi
+
+        if [ "$EXISTING_TS_COMMIT" = "$NVIM_TS_COMMIT" ]; then
+            echo "    Parser revisions already up-to-date"
+        else
+            # Fetch nvim-treesitter source at the correct commit
+            NVIM_TS_CACHE="$CACHE_DIR/nvim-treesitter"
+            mkdir -p "$NVIM_TS_CACHE"
+
+            if [ ! -d "$NVIM_TS_CACHE/.git" ]; then
+                echo "    Cloning nvim-treesitter..."
+                git clone --filter=blob:none https://github.com/nvim-treesitter/nvim-treesitter.git "$NVIM_TS_CACHE" >/dev/null 2>&1 || {
+                    echo "Warning: Failed to clone nvim-treesitter, skipping parser extraction"
+                    NVIM_TS_COMMIT=""
+                }
+            fi
+
+            if [ -n "$NVIM_TS_COMMIT" ]; then
+                echo "    Fetching nvim-treesitter at $NVIM_TS_COMMIT..."
+                git -C "$NVIM_TS_CACHE" fetch --depth 1 origin "$NVIM_TS_COMMIT" >/dev/null 2>&1 || {
+                    echo "Warning: Failed to fetch nvim-treesitter commit, skipping parser extraction"
+                    NVIM_TS_COMMIT=""
+                }
+            fi
+
+            if [ -n "$NVIM_TS_COMMIT" ]; then
+                # Extract nvim-treesitter to temp directory
+                mkdir -p "$TEMP_DIR/nvim-treesitter"
+                git -C "$NVIM_TS_CACHE" archive "$NVIM_TS_COMMIT" | tar -x -C "$TEMP_DIR/nvim-treesitter" || {
+                    echo "Warning: Failed to extract nvim-treesitter, skipping parser extraction"
+                    NVIM_TS_COMMIT=""
+                }
+            fi
+
+            if [ -n "$NVIM_TS_COMMIT" ]; then
+                # Run parser extraction script
+                nvim --headless -u NONE -l "$SCRIPT_DIR/extract-parser-revisions.lua" \
+                    "$TEMP_DIR/nvim-treesitter" \
+                    "$REPO_ROOT/data/treesitter.json" \
+                    "$REPO_ROOT/data/parser-revisions.json" \
+                    "$REPO_ROOT/data/parser-revisions.json" \
+                    "$NVIM_TS_COMMIT" || {
+                        echo "Warning: Failed to extract parser revisions"
+                    }
+
+                if [ -f "$REPO_ROOT/data/parser-revisions.json" ]; then
+                    if ! jq . "$REPO_ROOT/data/parser-revisions.json" > /dev/null 2>&1; then
+                        echo "Warning: Generated parser-revisions.json is not valid JSON"
+                        rm -f "$REPO_ROOT/data/parser-revisions.json"
+                    else
+                        PARSER_COUNT=$(jq '.parsers | keys | length' "$REPO_ROOT/data/parser-revisions.json" 2>/dev/null || echo "0")
+                        echo "    Extracted $PARSER_COUNT parser revisions"
+                    fi
+                fi
+            fi
+        fi
+    else
+        echo "    Warning: Could not find nvim-treesitter commit in plugins.json"
+    fi
 fi
 
 if [ -z "$VERIFY_PACKAGES" ]; then
@@ -184,6 +290,9 @@ if [ "$USED_RELEASE_CACHE" -eq 0 ]; then
     cp "$REPO_ROOT/data/plugins.json" "$RELEASE_CACHE_DIR/plugins.json"
     cp "$REPO_ROOT/data/dependencies.json" "$RELEASE_CACHE_DIR/dependencies.json"
     cp "$REPO_ROOT/data/treesitter.json" "$RELEASE_CACHE_DIR/treesitter.json"
+    if [ -f "$REPO_ROOT/data/parser-revisions.json" ]; then
+        cp "$REPO_ROOT/data/parser-revisions.json" "$RELEASE_CACHE_DIR/parser-revisions.json"
+    fi
     if [ -n "$VERIFY_PACKAGES" ] && [ -f "$REPO_ROOT/data/dependencies-verification-report.json" ]; then
         cp "$REPO_ROOT/data/dependencies-verification-report.json" "$RELEASE_CACHE_DIR/dependencies-verification-report.json"
     else
@@ -243,12 +352,18 @@ echo "    Extras with dependencies: $EXTRAS_WITH_DEPS"
 echo "    Core parsers: $CORE_PARSERS"
 echo "    Extra parsers: $EXTRA_PARSERS"
 
+# Show parser revisions stats if available
+if [ -f "$REPO_ROOT/data/parser-revisions.json" ]; then
+    PARSER_REVISIONS=$(jq '.parsers | keys | length' "$REPO_ROOT/data/parser-revisions.json" 2>/dev/null || echo "0")
+    echo "    Parser revisions (for 'latest' strategy): $PARSER_REVISIONS"
+fi
+
 # Generate a summary of changes
-if git diff --quiet data/plugins.json data/dependencies.json data/treesitter.json 2>/dev/null; then
+if git diff --quiet data/plugins.json data/dependencies.json data/treesitter.json data/parser-revisions.json data/starter-lazy.lua data/starter-version.txt 2>/dev/null; then
     echo "==> No changes detected"
 else
     echo "==> Changes detected:"
-    git diff --stat data/plugins.json data/dependencies.json data/treesitter.json 2>/dev/null || true
+    git diff --stat data/plugins.json data/dependencies.json data/treesitter.json data/parser-revisions.json data/starter-lazy.lua data/starter-version.txt 2>/dev/null || true
 fi
 
 # Remind about next steps if there are unmapped plugins
