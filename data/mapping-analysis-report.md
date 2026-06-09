@@ -1,18 +1,25 @@
 # Plugin Mapping Analysis Report
-Generated: 2026-03-09 13:52:25
-Total unmapped plugins: 9
-Package verification: DISABLED (use --verify to enable)
+Generated: 2026-06-04 16:58:52
+Total unmapped plugins: 8
+Package verification: ENABLED
 
-## Suggested Mappings (Unverified)
+## ❌ Failed Mappings
 
-Run with `--verify` to check which packages exist in nixpkgs.
+These plugins could not be automatically mapped:
 
-  "zbirenbaum/copilot.lua" = "copilot.lua";
-  "nvim-mini/mini.snippets" = "mini.snippets";
-  "nvim-mini/mini.files" = "mini.files";
-  "R-nvim/R.nvim" = "R-nvim";
-  "nvim-mini/mini.animate" = "mini.animate";
-  "alker0/chezmoi.vim" = "chezmoi.vim";
-  "xvzc/chezmoi.nvim" = "chezmoi-nvim";
-  "nvim-mini/mini.hipatterns" = "mini.hipatterns";
-  "dstein64/vim-startuptime" = "vim-startuptime";
+- **zbirenbaum/copilot.lua**
+  - Tried: copilot.lua
+- **nvim-mini/mini.snippets**
+  - Tried: mini.snippets
+- **nvim-mini/mini.files**
+  - Tried: mini.files
+- **R-nvim/R.nvim**
+  - Tried: R-nvim, R.nvim
+- **nvim-mini/mini.animate**
+  - Tried: mini.animate
+- **alker0/chezmoi.vim**
+  - Tried: chezmoi.vim
+- **xvzc/chezmoi.nvim**
+  - Tried: chezmoi-nvim, chezmoi.nvim
+- **nvim-mini/mini.hipatterns**
+  - Tried: mini.hipatterns

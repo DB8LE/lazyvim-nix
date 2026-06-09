@@ -35,14 +35,14 @@ local EXCLUDED_IDENTIFIERS = {
 
     -- Configuration keys and internal identifiers
     "FileType", "RUFF_TRACE", "arguments", "before_init", "buf_name", "capabilities", "chrome",
-    "cmd_env", "codelenses", "command", "completionmode", "copilot", "count", "desc", "diagnostics",
+    "cmd", "cmd_env", "codelenses", "command", "completionmode", "copilot", "count", "desc", "diagnostics",
     "diff", "dynamicRegistration", "ember", "enabled", "file_name", "filter", "filetypes", "filetypes_exclude",
-    "foldingRange", "gc_details", "generate", "git_config", "git_rebase", "gitattributes", "gitcommit",
+    "fixKind", "foldingRange", "gc_details", "generate", "git_config", "git_rebase", "gitattributes", "gitcommit",
     "gitignore", "glimmer", "glimmer_javascript", "glimmer_typescript", "gomod", "gosum", "gowork",
-    "http", "keys", "lineFoldingOnly", "lint", "lsp", "missingrefs", "mode", "msedge", "node",
-    "null-ls", "nvimtools/none-ls.nvim", "params", "printf", "regenerate_cgo", "root_markers",
-    "run_govulncheck", "schemas", "settings", "silent", "test", "textDocument", "tidy", "title",
-    "upgrade_dependency", "vendor", "workingDirectories", "bibtex"
+    "http", "init_options", "keys", "lineFoldingOnly", "lint", "lsp", "markers", "missingrefs", "mode",
+    "msedge", "node", "null-ls", "nvimtools/none-ls.nvim", "params", "printf", "regenerate_cgo", "root_dir",
+    "root_markers", "run_govulncheck", "schemas", "semanticTokens", "settings", "silent", "test",
+    "textDocument", "tidy", "title", "upgrade_dependency", "vendor", "workingDirectories", "bibtex"
 }
 
 -- Create lookup table for faster exclusion checks
@@ -411,6 +411,9 @@ local function resolve_package_name(dep_name)
         gleam = "gleam",
         tinymist = "tinymist",
         ["haskell-language-server"] = "haskell-language-server",
+        jsonls = "vscode-langservers-extracted",
+        ["elm-format"] = "elmPackages.elm-format",
+        ["elm-language-server"] = "elmPackages.elm-language-server",
 
         -- Go tools with direct names
         gopls = "gopls",
@@ -427,12 +430,27 @@ local function resolve_package_name(dep_name)
         ruff = "python3Packages.ruff",
         sqlfluff = "sqlfluff",  -- Top-level package
 
-        -- Node packages (with correct names)
-        prettier = "nodePackages.prettier",
-        eslint = "nodePackages.eslint",
+        -- Node packages (top-level in nixpkgs)
+        prettier = "prettier",
+        eslint = "eslint",
+        biome = "biome",
+        oxlint = "oxlint",
+        oxfmt = "oxfmt",
+        tsgo = "typescript-go",
+        tsgolint = "tsgolint",
+        vtsls = "vtsls",
 
         -- Debug adapters
         codelldb = "vscode-extensions.vadimcn.vscode-lldb",
+
+        -- .NET tools
+        fsautocomplete = "fsautocomplete",
+        csharpier = "csharpier",
+        netcoredbg = "netcoredbg",
+        fantomas = "fantomas",
+
+        -- CSS tools
+        tailwindcss = "tailwindcss",
 
         -- Runtime packages
         nodejs = "nodejs",
@@ -475,13 +493,13 @@ local function resolve_package_name(dep_name)
         end
     end
 
-    -- Strategy 5: Node packages (with verified names)
+    -- Strategy 5: Node tools (top-level in nixpkgs)
     local node_tools = {
-        ["markdownlint-cli2"] = "markdownlint-cli2"  -- Use hyphens, not underscores
+        ["markdownlint-cli2"] = "markdownlint-cli2"
     }
     for tool, nixpkg_name in pairs(node_tools) do
         if dep_name == tool then
-            return "nodePackages." .. nixpkg_name
+            return nixpkg_name
         end
     end
 

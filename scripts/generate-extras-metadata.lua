@@ -55,9 +55,38 @@ local function main()
         extras_data[category][key_name] = {
           name = extra_name,
           category = category,
+          is_nested = false,
           import = string.format("lazyvim.plugins.extras.%s.%s", category, extra_name)
         }
         total_count = total_count + 1
+      end
+
+      -- Handle subdirectory extras (e.g., lang/typescript/ with init.lua)
+      local subdirs = vim.fn.glob(category_path .. "/*", false, true)
+      table.sort(subdirs)
+
+      for _, subdir in ipairs(subdirs) do
+        if vim.fn.isdirectory(subdir) == 1 then
+          local extra_paths = vim.fn.glob(subdir .. "/*.lua", false, true)
+          for _, extra_path in ipairs(extra_paths) do
+            local extra_file = vim.fn.fnamemodify(extra_path, ":t")
+            local extra_name = vim.fn.fnamemodify(subdir, ":t")
+            local is_nested = extra_file ~= "init.lua"
+            if is_nested then
+              local subextra_name = vim.fn.fnamemodify(extra_file, ":r")
+              extra_name = string.format("%s.%s", extra_name, subextra_name)
+            end
+            local key_name = extra_name:gsub("-", "_")
+
+            extras_data[category][key_name] = {
+              name = extra_name,
+              category = category,
+              is_nested = is_nested,
+              import = string.format("lazyvim.plugins.extras.%s.%s", category, extra_name)
+            }
+            total_count = total_count + 1
+          end
+        end
       end
     end
   end
